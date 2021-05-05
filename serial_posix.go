@@ -163,3 +163,23 @@ func (p *Port) SetDtrOff() error {
 	)
 	return err
 }
+
+func (p *Port) SetRtsOn() error {
+	_, _, err := syscall.Syscall(
+		syscall.SYS_IOCTL,
+		uintptr(p.f.Fd()),
+		uintptr(syscall.TIOCMBIS),
+		uintptr(syscall.TIOCM_RTS),
+	)
+	return err
+}
+
+func (p *Port) SetRtsOff() error {
+	_, _, err := syscall.Syscall(
+		syscall.SYS_IOCTL,
+		uintptr(p.f.Fd()),
+		uintptr(syscall.TIOCMBIC),
+		uintptr(syscall.TIOCM_RTS),
+	)
+	return err
+}
