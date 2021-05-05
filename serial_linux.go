@@ -119,3 +119,23 @@ func (p *Port) Flush() error {
 func (p *Port) Close() (err error) {
 	return p.f.Close()
 }
+
+func (p *Port) SetDtrOn() error {
+	_, _, err := syscall.Syscall(
+		syscall.SYS_IOCTL,
+		uintptr(p.f.Fd()),
+		uintptr(syscall.TIOCMBIS),
+		uintptr(syscall.TIOCM_DTR),
+	)
+	return err
+}
+
+func (p *Port) SetDtrOff() error {
+	_, _, err := syscall.Syscall(
+		syscall.SYS_IOCTL,
+		uintptr(p.f.Fd()),
+		uintptr(syscall.TIOCMBIC),
+		uintptr(syscall.TIOCM_DTR),
+	)
+	return err
+}
