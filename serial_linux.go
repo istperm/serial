@@ -1,13 +1,26 @@
-// +build linux,!cgo
+// +build linux
+// -build !windows,!cgo
 
 package serial
 
 import (
+	"io"
+	"log"
 	"os"
 	"syscall"
 	"time"
 	"unsafe"
 )
+
+type Port struct {
+	// We intentionly do not use an "embedded" struct so that we
+	// don't export File
+	f      *os.File
+	logger *log.Logger
+	logTag rune
+	logBuf [64]byte
+	logPtr int
+}
 
 func openPort(name string, baud int, readTimeout time.Duration) (p *Port, err error) {
 	var bauds = map[int]uint32{
@@ -89,73 +102,86 @@ func openPort(name string, baud int, readTimeout time.Duration) (p *Port, err er
 	return &Port{f: f}, nil
 }
 
-type Port struct {
-	// We intentionly do not use an "embedded" struct so that we
-	// don't export File
-	f *os.File
+func (p *Port) Close() (err error) {
+	p.logMsg("Close", "")
+	return p.f.Close()
 }
 
-func (p *Port) Read(b []byte) (n int, err error) {
-	return p.f.Read(b)
+func (p *Port) Read(buf []byte) (n int, err error) {
+	n, err = p.f.Read(buf)
+	if err != nil && err != io.EOF {
+		p.logMsg("Read", "Error %d", err)
+		return n, err
+	} else if n > 0 {
+		p.logData('+', buf)
+		return n, nil
+	}
+	return 0, nil
 }
 
-func (p *Port) Write(b []byte) (n int, err error) {
-	return p.f.Write(b)
+func (p *Port) Write(buf []byte) (n int, err error) {
+	n, err = p.f.Write(buf)
+	if err != nil {
+		p.logMsg("Write", err.Error())
+	} else if n > 0 {
+		p.logData('-', buf)
+	}
+	return n, err
 }
 
 // Discards data written to the port but not transmitted,
 // or data received but not read
 func (p *Port) Flush() error {
 	const TCFLSH = 0x540B
-	_, _, err := syscall.Syscall(
+	_, _, errno := syscall.Syscall(
 		syscall.SYS_IOCTL,
 		uintptr(p.f.Fd()),
 		uintptr(TCFLSH),
 		uintptr(syscall.TCIOFLUSH),
 	)
-	return err
+	if errno != 0 {
+		p.logMsg("Flush", "Error %d", errno)
+		return errno
+	}
+	return nil
 }
 
-func (p *Port) Close() (err error) {
-	return p.f.Close()
-}
-
-func (p *Port) SetDtrOn() error {
-	_, _, err := syscall.Syscall(
+func (p *Port) SetDtr(v bool) error {
+	a2 := syscall.TIOCMBIC
+	if v {
+		a2 = syscall.TIOCMBIS
+	}
+	_, _, errno := syscall.Syscall(
 		syscall.SYS_IOCTL,
 		uintptr(p.f.Fd()),
-		uintptr(syscall.TIOCMBIS),
+		uintptr(a2),
 		uintptr(syscall.TIOCM_DTR),
 	)
-	return err
+	if errno != 0 {
+		p.logMsg("SetDtr", "(%t) -> error %d", v, errno)
+		return errno
+	} else {
+		p.logMsg("DTR", "%t", v)
+		return nil
+	}
 }
 
-func (p *Port) SetDtrOff() error {
-	_, _, err := syscall.Syscall(
+func (p *Port) SetRts(v bool) error {
+	a2 := syscall.TIOCMBIC
+	if v {
+		a2 = syscall.TIOCMBIS
+	}
+	_, _, errno := syscall.Syscall(
 		syscall.SYS_IOCTL,
 		uintptr(p.f.Fd()),
-		uintptr(syscall.TIOCMBIC),
-		uintptr(syscall.TIOCM_DTR),
-	)
-	return err
-}
-
-func (p *Port) SetRtsOn() error {
-	_, _, err := syscall.Syscall(
-		syscall.SYS_IOCTL,
-		uintptr(p.f.Fd()),
-		uintptr(syscall.TIOCMBIS),
+		uintptr(a2),
 		uintptr(syscall.TIOCM_RTS),
 	)
-	return err
-}
-
-func (p *Port) SetRtsOff() error {
-	_, _, err := syscall.Syscall(
-		syscall.SYS_IOCTL,
-		uintptr(p.f.Fd()),
-		uintptr(syscall.TIOCMBIC),
-		uintptr(syscall.TIOCM_RTS),
-	)
-	return err
+	if errno != 0 {
+		p.logMsg("SetDtr", "(%t) -> error %d", v, errno)
+		return errno
+	} else {
+		p.logMsg("DTR", "%t", v)
+		return nil
+	}
 }

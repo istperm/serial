@@ -155,40 +155,6 @@ func (p *Port) Flush() error {
 	return err
 }
 
-var (
-	nSetCommState,
-	nSetCommTimeouts,
-	nSetCommMask,
-	nSetupComm,
-	nGetOverlappedResult,
-	nCreateEvent,
-	nResetEvent,
-	nPurgeComm,
-	nEscapeCommFunction,
-	nGetCommModemStatus,
-	nFlushFileBuffers uintptr
-)
-
-func init() {
-	k32, err := syscall.LoadLibrary("kernel32.dll")
-	if err != nil {
-		panic("LoadLibrary " + err.Error())
-	}
-	defer syscall.FreeLibrary(k32)
-
-	nSetCommState = getProcAddr(k32, "SetCommState")
-	nSetCommTimeouts = getProcAddr(k32, "SetCommTimeouts")
-	nSetCommMask = getProcAddr(k32, "SetCommMask")
-	nSetupComm = getProcAddr(k32, "SetupComm")
-	nGetOverlappedResult = getProcAddr(k32, "GetOverlappedResult")
-	nCreateEvent = getProcAddr(k32, "CreateEventW")
-	nResetEvent = getProcAddr(k32, "ResetEvent")
-	nPurgeComm = getProcAddr(k32, "PurgeComm")
-	nFlushFileBuffers = getProcAddr(k32, "FlushFileBuffers")
-	nEscapeCommFunction = getProcAddr(k32, "EscapeCommFunction")
-	nGetCommModemStatus = getProcAddr(k32, "GetCommModemStatus")
-}
-
 func (p *Port) SetDtrOn() error {
 	const SETDTR = 0x0005
 	r, _, err := syscall.Syscall(nEscapeCommFunction, 2, uintptr(p.fd), SETDTR, 0)
@@ -268,6 +234,40 @@ func (p *Port) GetCommModemStatus() (err error, cts_on, dsr_on, ring_on, rlsd_on
 
 	p.logMsg("GetCommModemStatus", "CTS:%t DSR:%t RING:%t RLSD:%t", cts_on, dsr_on, ring_on, rlsd_on)
 	return nil, cts_on, dsr_on, ring_on, rlsd_on
+}
+
+var (
+	nSetCommState,
+	nSetCommTimeouts,
+	nSetCommMask,
+	nSetupComm,
+	nGetOverlappedResult,
+	nCreateEvent,
+	nResetEvent,
+	nPurgeComm,
+	nEscapeCommFunction,
+	nGetCommModemStatus,
+	nFlushFileBuffers uintptr
+)
+
+func init() {
+	k32, err := syscall.LoadLibrary("kernel32.dll")
+	if err != nil {
+		panic("LoadLibrary " + err.Error())
+	}
+	defer syscall.FreeLibrary(k32)
+
+	nSetCommState = getProcAddr(k32, "SetCommState")
+	nSetCommTimeouts = getProcAddr(k32, "SetCommTimeouts")
+	nSetCommMask = getProcAddr(k32, "SetCommMask")
+	nSetupComm = getProcAddr(k32, "SetupComm")
+	nGetOverlappedResult = getProcAddr(k32, "GetOverlappedResult")
+	nCreateEvent = getProcAddr(k32, "CreateEventW")
+	nResetEvent = getProcAddr(k32, "ResetEvent")
+	nPurgeComm = getProcAddr(k32, "PurgeComm")
+	nFlushFileBuffers = getProcAddr(k32, "FlushFileBuffers")
+	nEscapeCommFunction = getProcAddr(k32, "EscapeCommFunction")
+	nGetCommModemStatus = getProcAddr(k32, "GetCommModemStatus")
 }
 
 func getProcAddr(lib syscall.Handle, name string) uintptr {
