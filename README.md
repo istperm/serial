@@ -11,6 +11,7 @@ A Go package to allow you to read and write from the
 serial port as a stream of bytes.
 
 v1.0.1 - DTR control added in linux version.
+v1.0.5 - logging added
 
 Details
 -------
