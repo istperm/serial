@@ -86,7 +86,7 @@ type Config struct {
 
 	// Size     int // 0 get translated to 8
 	// Parity   SomeNewTypeToGetCorrectDefaultOf_None
-	// StopBits SomeNewTypeToGetCorrectDefaultOf_1
+	StopBits SomeNewTypeToGetCorrectDefaultOf_1
 
 	// RTSFlowControl bool
 	// DTRFlowControl bool
