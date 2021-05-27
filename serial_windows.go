@@ -4,6 +4,7 @@ package serial
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"sync"
 	"syscall"
@@ -12,12 +13,16 @@ import (
 )
 
 type Port struct {
-	f  *os.File
-	fd syscall.Handle
-	rl sync.Mutex
-	wl sync.Mutex
-	ro *syscall.Overlapped
-	wo *syscall.Overlapped
+	f      *os.File
+	fd     syscall.Handle
+	rl     sync.Mutex
+	wl     sync.Mutex
+	ro     *syscall.Overlapped
+	wo     *syscall.Overlapped
+	logger *log.Logger
+	logTag rune
+	logBuf [64]byte
+	logPtr int
 }
 
 type structDCB struct {
@@ -90,22 +95,29 @@ func openPort(name string, baud int, readTimeout time.Duration) (p *Port, err er
 }
 
 func (p *Port) Close() error {
+	p.logMsg("Close", "")
 	return p.f.Close()
 }
 
-func (p *Port) Write(buf []byte) (int, error) {
+func (p *Port) Write(buf []byte) (n int, err error) {
 	p.wl.Lock()
 	defer p.wl.Unlock()
 
-	if err := resetEvent(p.wo.HEvent); err != nil {
+	if err = resetEvent(p.wo.HEvent); err != nil {
+		p.logMsg("Write.reset", err.Error())
 		return 0, err
 	}
-	var n uint32
-	err := syscall.WriteFile(p.fd, buf, &n, p.wo)
+	var cnt uint32
+	err = syscall.WriteFile(p.fd, buf, &cnt, p.wo)
 	if err != nil && err != syscall.ERROR_IO_PENDING {
-		return int(n), err
+		p.logMsg("Write.write", err.Error())
+		return int(cnt), err
 	}
-	return getOverlappedResult(p.fd, p.wo)
+	n, err = getOverlappedResult(p.fd, p.wo)
+	if n > 0 {
+		p.logData('-', buf)
+	}
+	return n, err
 }
 
 func (p *Port) Read(buf []byte) (int, error) {
@@ -117,80 +129,51 @@ func (p *Port) Read(buf []byte) (int, error) {
 	defer p.rl.Unlock()
 
 	if err := resetEvent(p.ro.HEvent); err != nil {
+		p.logMsg("Read.reset", err.Error())
 		return 0, err
 	}
 	var done uint32
 	err := syscall.ReadFile(p.fd, buf, &done, p.ro)
 	if err != nil && err != syscall.ERROR_IO_PENDING {
+		p.logMsg("Read.read", err.Error())
 		return int(done), err
 	}
-	return getOverlappedResult(p.fd, p.ro)
+	n, err := getOverlappedResult(p.fd, p.ro)
+	if n > 0 {
+		p.logData('+', buf)
+	}
+	return n, err
 }
 
 // Discards data written to the port but not transmitted,
 // or data received but not read
 func (p *Port) Flush() error {
-	return purgeComm(p.fd)
-}
-
-var (
-	nSetCommState,
-	nSetCommTimeouts,
-	nSetCommMask,
-	nSetupComm,
-	nGetOverlappedResult,
-	nCreateEvent,
-	nResetEvent,
-	nPurgeComm,
-	nEscapeCommFunction,
-	nGetCommModemStatus,
-	nFlushFileBuffers uintptr
-)
-
-func init() {
-	k32, err := syscall.LoadLibrary("kernel32.dll")
+	err := purgeComm(p.fd)
 	if err != nil {
-		panic("LoadLibrary " + err.Error())
+		p.logMsg("Flush", err.Error())
 	}
-	defer syscall.FreeLibrary(k32)
-
-	nSetCommState = getProcAddr(k32, "SetCommState")
-	nSetCommTimeouts = getProcAddr(k32, "SetCommTimeouts")
-	nSetCommMask = getProcAddr(k32, "SetCommMask")
-	nSetupComm = getProcAddr(k32, "SetupComm")
-	nGetOverlappedResult = getProcAddr(k32, "GetOverlappedResult")
-	nCreateEvent = getProcAddr(k32, "CreateEventW")
-	nResetEvent = getProcAddr(k32, "ResetEvent")
-	nPurgeComm = getProcAddr(k32, "PurgeComm")
-	nFlushFileBuffers = getProcAddr(k32, "FlushFileBuffers")
-	nEscapeCommFunction = getProcAddr(k32, "EscapeCommFunction")
-	nGetCommModemStatus = getProcAddr(k32, "GetCommModemStatus")
+	return err
 }
 
 func (p *Port) SetDtrOn() error {
 	const SETDTR = 0x0005
-
 	r, _, err := syscall.Syscall(nEscapeCommFunction, 2, uintptr(p.fd), SETDTR, 0)
 	if r == 0 {
+		p.logMsg("SetDtr", "Error", err)
 		return err
 	}
+	p.logMsg("DTR", "ON")
 	return nil
 }
+
 func (p *Port) SetDtrOff() error {
 	const CLRDTR = 0x0006
 	r, _, err := syscall.Syscall(nEscapeCommFunction, 2, uintptr(p.fd), CLRDTR, 0)
 	if r == 0 {
+		p.logMsg("SetDtr", "Error", err)
 		return err
 	}
-	return nil
-}
-
-func (p *Port) SetRtsOff() error {
-	const CLRRTS = 0x0004
-	r, _, err := syscall.Syscall(nEscapeCommFunction, 2, uintptr(p.fd), CLRRTS, 0)
-	if r == 0 {
-		return err
-	}
+	p.logMsg("DTR", "OFF")
 	return nil
 }
 
@@ -198,8 +181,21 @@ func (p *Port) SetRtsOn() error {
 	const SETRTS = 0x0003
 	r, _, err := syscall.Syscall(nEscapeCommFunction, 2, uintptr(p.fd), SETRTS, 0)
 	if r == 0 {
+		p.logMsg("SetRts", "Error", err)
 		return err
 	}
+	p.logMsg("RTS", "ON")
+	return nil
+}
+
+func (p *Port) SetRtsOff() error {
+	const CLRRTS = 0x0004
+	r, _, err := syscall.Syscall(nEscapeCommFunction, 2, uintptr(p.fd), CLRRTS, 0)
+	if r == 0 {
+		p.logMsg("SetRts", "Error", err)
+		return err
+	}
+	p.logMsg("RTS", "OFF")
 	return nil
 }
 
@@ -236,7 +232,42 @@ func (p *Port) GetCommModemStatus() (err error, cts_on, dsr_on, ring_on, rlsd_on
 		rlsd_on = true
 	}
 
+	p.logMsg("GetCommModemStatus", "CTS:%t DSR:%t RING:%t RLSD:%t", cts_on, dsr_on, ring_on, rlsd_on)
 	return nil, cts_on, dsr_on, ring_on, rlsd_on
+}
+
+var (
+	nSetCommState,
+	nSetCommTimeouts,
+	nSetCommMask,
+	nSetupComm,
+	nGetOverlappedResult,
+	nCreateEvent,
+	nResetEvent,
+	nPurgeComm,
+	nEscapeCommFunction,
+	nGetCommModemStatus,
+	nFlushFileBuffers uintptr
+)
+
+func init() {
+	k32, err := syscall.LoadLibrary("kernel32.dll")
+	if err != nil {
+		panic("LoadLibrary " + err.Error())
+	}
+	defer syscall.FreeLibrary(k32)
+
+	nSetCommState = getProcAddr(k32, "SetCommState")
+	nSetCommTimeouts = getProcAddr(k32, "SetCommTimeouts")
+	nSetCommMask = getProcAddr(k32, "SetCommMask")
+	nSetupComm = getProcAddr(k32, "SetupComm")
+	nGetOverlappedResult = getProcAddr(k32, "GetOverlappedResult")
+	nCreateEvent = getProcAddr(k32, "CreateEventW")
+	nResetEvent = getProcAddr(k32, "ResetEvent")
+	nPurgeComm = getProcAddr(k32, "PurgeComm")
+	nFlushFileBuffers = getProcAddr(k32, "FlushFileBuffers")
+	nEscapeCommFunction = getProcAddr(k32, "EscapeCommFunction")
+	nGetCommModemStatus = getProcAddr(k32, "GetCommModemStatus")
 }
 
 func getProcAddr(lib syscall.Handle, name string) uintptr {

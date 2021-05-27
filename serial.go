@@ -56,6 +56,11 @@ Example usage:
 package serial
 
 import (
+	"fmt"
+	"log"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -78,10 +83,11 @@ type Config struct {
 	Name        string
 	Baud        int
 	ReadTimeout time.Duration // Total timeout
+	LogFile     string
 
 	// Size     int // 0 get translated to 8
 	// Parity   SomeNewTypeToGetCorrectDefaultOf_None
-	// StopBits SomeNewTypeToGetCorrectDefaultOf_1
+	StopBits int
 
 	// RTSFlowControl bool
 	// DTRFlowControl bool
@@ -90,9 +96,96 @@ type Config struct {
 	// CRLFTranslate bool
 }
 
+type SerialError struct {
+	Tag string
+	Msg string
+	Cod int
+}
+
+func (se SerialError) Error() string {
+	var sb strings.Builder
+	if se.Tag != "" {
+		sb.WriteString("[" + se.Tag + "] ")
+	}
+	sb.WriteString(se.Msg)
+	if se.Cod != 0 {
+		sb.WriteString(" [" + strconv.Itoa(se.Cod) + "]")
+	}
+	return sb.String()
+}
+
 // OpenPort opens a serial port with the specified configuration
 func OpenPort(c *Config) (*Port, error) {
-	return openPort(c.Name, c.Baud, c.ReadTimeout)
+	// call platform-specific function
+	p, err := openPort(c.Name, c.Baud, c.ReadTimeout)
+	if p != nil && err == nil && c.LogFile != "" {
+		err = p.openLog(c.LogFile)
+		p.logMsg("Open", c.Name)
+	}
+	return p, err
+}
+
+func (p *Port) openLog(logFile string) error {
+	f, e := os.OpenFile(logFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0755)
+	if e == nil {
+		p.logger = log.New(f, "", log.LstdFlags)
+	}
+	return e
+}
+
+func (p *Port) logMsg(tag string, msg string, arg ...interface{}) {
+	if p.logger == nil {
+		return
+	}
+	p.logFlush()
+	if tag != "" {
+		msg = "[" + tag + "] " + msg
+	}
+	p.logger.Printf(msg, arg...)
+}
+
+func (p *Port) logData(tag rune, data []byte) {
+	if p.logger == nil {
+		return
+	}
+	if tag != p.logTag {
+		p.logFlush()
+		p.logTag = tag
+	}
+	for i := 0; i < len(data); i++ {
+		if p.logPtr >= len(p.logBuf) {
+			p.logFlush()
+		}
+		p.logBuf[p.logPtr] = data[i]
+		p.logPtr++
+	}
+}
+
+func (p *Port) logFlush() {
+	if p.logger != nil && p.logPtr > 0 {
+		var hex, asc strings.Builder
+		tag := p.logTag
+		if tag == 0 {
+			tag = ' '
+		}
+		for i := 0; i < p.logPtr; i++ {
+			if i%16 == 0 && hex.Cap() > 0 {
+				p.logger.Printf("%c %s %s", tag, hex.String(), asc.String())
+				hex.Reset()
+				asc.Reset()
+			}
+			hex.WriteString(fmt.Sprintf("%02X ", p.logBuf[i]))
+			c := rune(p.logBuf[i])
+			if c < 0x20 {
+				c = '.'
+			}
+			asc.WriteRune(c)
+		}
+		if hex.Cap() > 0 {
+			p.logger.Printf("%c %-48s %s", tag, hex.String(), asc.String())
+		}
+	}
+	p.logPtr = 0
 }
 
 // Converts the timeout values for Linux / POSIX systems

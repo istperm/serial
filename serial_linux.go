@@ -1,13 +1,24 @@
-// +build linux,!cgo
+// +build linux
+// -build !windows,!cgo
 
 package serial
 
 import (
+	"io"
+	"log"
 	"os"
 	"syscall"
 	"time"
 	"unsafe"
 )
+
+type Port struct {
+	f      *os.File
+	logger *log.Logger
+	logTag rune
+	logBuf [64]byte
+	logPtr int
+}
 
 func openPort(name string, baud int, readTimeout time.Duration) (p *Port, err error) {
 	var bauds = map[int]uint32{
@@ -42,14 +53,13 @@ func openPort(name string, baud int, readTimeout time.Duration) (p *Port, err er
 		3500000: syscall.B3500000,
 		4000000: syscall.B4000000,
 	}
-
 	rate := bauds[baud]
-
 	if rate == 0 {
-		return
+		return nil, SerialError{Msg: "Invalid baud rate", Cod: baud}
 	}
 
-	f, err := os.OpenFile(name, syscall.O_RDWR|syscall.O_NOCTTY|syscall.O_NONBLOCK, 0666)
+	//f, err := os.OpenFile(name, syscall.O_RDWR|syscall.O_NOCTTY|syscall.O_NONBLOCK, 0666)
+	f, err := os.OpenFile(name, syscall.O_RDWR, 0666)
 	if err != nil {
 		return nil, err
 	}
@@ -61,101 +71,126 @@ func openPort(name string, baud int, readTimeout time.Duration) (p *Port, err er
 	}()
 
 	fd := f.Fd()
-	vmin, vtime := posixTimeoutValues(readTimeout)
-	t := syscall.Termios{
-		Iflag:  syscall.IGNPAR,
-		Cflag:  syscall.CS8 | syscall.CREAD | syscall.CLOCAL | rate,
-		Cc:     [32]uint8{syscall.VMIN: vmin, syscall.VTIME: vtime},
-		Ispeed: rate,
-		Ospeed: rate,
-	}
 
-	if _, _, errno := syscall.Syscall6(
+	//
+	var ps syscall.Termios
+	_, _, errno := syscall.Syscall(
 		syscall.SYS_IOCTL,
 		uintptr(fd),
-		uintptr(syscall.TCSETS),
-		uintptr(unsafe.Pointer(&t)),
-		0,
-		0,
-		0,
-	); errno != 0 {
+		uintptr(syscall.TCGETS),
+		uintptr(unsafe.Pointer(&ps)),
+	)
+	if errno != 0 {
 		return nil, errno
 	}
 
-	if err = syscall.SetNonblock(int(fd), false); err != nil {
+	// #define CRTSCTS 020000000000 /* Flow control. */
+	CRTSCTS := 020000000000
+	ps.Cflag &= ^uint32(syscall.PARENB | syscall.CSIZE | CRTSCTS)
+	ps.Cflag |= (syscall.CREAD | syscall.CLOCAL | syscall.CSTOPB | syscall.CS8)
+
+	ps.Lflag &= ^uint32(syscall.ICANON | syscall.ECHO | syscall.ECHOE | syscall.ECHONL | syscall.ISIG)
+
+	ps.Iflag &= ^uint32(syscall.IXON | syscall.IXOFF | syscall.IXANY)
+	ps.Iflag &= ^uint32(syscall.IGNBRK | syscall.BRKINT | syscall.PARMRK | syscall.ISTRIP | syscall.INLCR | syscall.IGNCR | syscall.ICRNL)
+	ps.Iflag |= syscall.IGNPAR
+
+	ps.Oflag &= ^uint32(syscall.OPOST | syscall.ONLCR)
+
+	vmin, vtime := posixTimeoutValues(readTimeout)
+	ps.Cc[syscall.VMIN] = vmin
+	ps.Cc[syscall.VTIME] = vtime
+
+	ps.Ispeed = rate
+	ps.Ospeed = rate
+
+	_, _, errno = syscall.Syscall(
+		syscall.SYS_IOCTL,
+		uintptr(fd),
+		uintptr(syscall.TCSETS),
+		uintptr(unsafe.Pointer(&ps)),
+	)
+	if errno != 0 {
+		return nil, errno
+	}
+
+	if err = syscall.SetNonblock(int(fd), true); err != nil {
 		return
 	}
 
 	return &Port{f: f}, nil
 }
 
-type Port struct {
-	// We intentionly do not use an "embedded" struct so that we
-	// don't export File
-	f *os.File
+func (p *Port) Close() (err error) {
+	p.logMsg("Close", "")
+	return p.f.Close()
 }
 
-func (p *Port) Read(b []byte) (n int, err error) {
-	return p.f.Read(b)
+func (p *Port) Read(buf []byte) (n int, err error) {
+	n, err = p.f.Read(buf)
+	if err != nil && err != io.EOF {
+		p.logMsg("Read", "Error %d", err)
+		return n, err
+	} else if n > 0 {
+		p.logData('+', buf)
+		return n, nil
+	}
+	return 0, nil
 }
 
-func (p *Port) Write(b []byte) (n int, err error) {
-	return p.f.Write(b)
+func (p *Port) Write(buf []byte) (n int, err error) {
+	n, err = p.f.Write(buf)
+	if err != nil {
+		p.logMsg("Write", err.Error())
+	} else if n > 0 {
+		p.logData('-', buf)
+	}
+	return n, err
 }
 
 // Discards data written to the port but not transmitted,
 // or data received but not read
 func (p *Port) Flush() error {
 	const TCFLSH = 0x540B
-	_, _, err := syscall.Syscall(
+	_, _, errno := syscall.Syscall(
 		syscall.SYS_IOCTL,
-		uintptr(p.f.Fd()),
+		p.f.Fd(),
 		uintptr(TCFLSH),
 		uintptr(syscall.TCIOFLUSH),
 	)
-	return err
+	if errno != 0 {
+		p.logMsg("Flush", "Error %d", errno)
+		return errno
+	} else {
+		p.logMsg("Flush", "")
+	}
+	return nil
 }
 
-func (p *Port) Close() (err error) {
-	return p.f.Close()
+func (p *Port) SetDtr(v bool) error {
+	return p.setModemLine("DTR", syscall.TIOCM_DTR, v)
 }
 
-func (p *Port) SetDtrOn() error {
-	_, _, err := syscall.Syscall(
+func (p *Port) SetRts(v bool) error {
+	return p.setModemLine("RTS", syscall.TIOCM_RTS, v)
+}
+
+func (p *Port) setModemLine(tag string, line uint, v bool) error {
+	req := syscall.TIOCMBIC
+	if v {
+		req = syscall.TIOCMBIS
+	}
+	_, _, errno := syscall.Syscall(
 		syscall.SYS_IOCTL,
-		uintptr(p.f.Fd()),
-		uintptr(syscall.TIOCMBIS),
-		uintptr(syscall.TIOCM_DTR),
+		p.f.Fd(),
+		uintptr(req),
+		uintptr(unsafe.Pointer(&line)),
 	)
-	return err
-}
-
-func (p *Port) SetDtrOff() error {
-	_, _, err := syscall.Syscall(
-		syscall.SYS_IOCTL,
-		uintptr(p.f.Fd()),
-		uintptr(syscall.TIOCMBIC),
-		uintptr(syscall.TIOCM_DTR),
-	)
-	return err
-}
-
-func (p *Port) SetRtsOn() error {
-	_, _, err := syscall.Syscall(
-		syscall.SYS_IOCTL,
-		uintptr(p.f.Fd()),
-		uintptr(syscall.TIOCMBIS),
-		uintptr(syscall.TIOCM_RTS),
-	)
-	return err
-}
-
-func (p *Port) SetRtsOff() error {
-	_, _, err := syscall.Syscall(
-		syscall.SYS_IOCTL,
-		uintptr(p.f.Fd()),
-		uintptr(syscall.TIOCMBIC),
-		uintptr(syscall.TIOCM_RTS),
-	)
-	return err
+	if errno != 0 {
+		p.logMsg(tag, "%t -> error %s [%d]", v, errno.Error(), errno)
+		return errno
+	} else {
+		p.logMsg(tag, "%t", v)
+		return nil
+	}
 }
