@@ -4,23 +4,16 @@
 package serial
 
 import (
-	"io"
-	"log"
 	"os"
 	"syscall"
-	"time"
 	"unsafe"
 )
 
 type Port struct {
-	f      *os.File
-	logger *log.Logger
-	logTag rune
-	logBuf [64]byte
-	logPtr int
+	BasePort
 }
 
-func openPort(name string, baud int, readTimeout time.Duration) (p *Port, err error) {
+func openPort(c *Config) (p *Port, err error) {
 	var bauds = map[int]uint32{
 		50:      syscall.B50,
 		75:      syscall.B75,
@@ -53,13 +46,13 @@ func openPort(name string, baud int, readTimeout time.Duration) (p *Port, err er
 		3500000: syscall.B3500000,
 		4000000: syscall.B4000000,
 	}
-	rate := bauds[baud]
+	rate := bauds[c.Baud]
 	if rate == 0 {
-		return nil, SerialError{Msg: "Invalid baud rate", Cod: baud}
+		return nil, SerialError{Msg: "Invalid baud rate", Cod: c.Baud}
 	}
 
-	//f, err := os.OpenFile(name, syscall.O_RDWR|syscall.O_NOCTTY|syscall.O_NONBLOCK, 0666)
-	f, err := os.OpenFile(name, syscall.O_RDWR, 0666)
+	//	f, err := os.OpenFile(c.Name, syscall.O_RDWR|syscall.O_NOCTTY|syscall.O_NONBLOCK, 0666)
+	f, err := os.OpenFile(c.Name, syscall.O_RDWR|syscall.O_NOCTTY|syscall.O_NONBLOCK, 0666)
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +65,7 @@ func openPort(name string, baud int, readTimeout time.Duration) (p *Port, err er
 
 	fd := f.Fd()
 
-	//
+	// Get current port settings
 	var ps syscall.Termios
 	_, _, errno := syscall.Syscall(
 		syscall.SYS_IOCTL,
@@ -86,8 +79,11 @@ func openPort(name string, baud int, readTimeout time.Duration) (p *Port, err er
 
 	// #define CRTSCTS 020000000000 /* Flow control. */
 	CRTSCTS := 020000000000
-	ps.Cflag &= ^uint32(syscall.PARENB | syscall.CSIZE | CRTSCTS)
-	ps.Cflag |= (syscall.CREAD | syscall.CLOCAL | syscall.CSTOPB | syscall.CS8)
+	ps.Cflag &= ^uint32(syscall.PARENB | syscall.CSIZE | syscall.CSTOPB | CRTSCTS)
+	ps.Cflag |= (syscall.CREAD | syscall.CLOCAL | syscall.CS8)
+	if c.StopBits > 1 {
+		ps.Cflag |= syscall.CSTOPB
+	}
 
 	ps.Lflag &= ^uint32(syscall.ICANON | syscall.ECHO | syscall.ECHOE | syscall.ECHONL | syscall.ISIG)
 
@@ -97,7 +93,7 @@ func openPort(name string, baud int, readTimeout time.Duration) (p *Port, err er
 
 	ps.Oflag &= ^uint32(syscall.OPOST | syscall.ONLCR)
 
-	vmin, vtime := posixTimeoutValues(readTimeout)
+	vmin, vtime := posixTimeoutValues(c.ReadTimeout)
 	ps.Cc[syscall.VMIN] = vmin
 	ps.Cc[syscall.VTIME] = vtime
 
@@ -118,79 +114,18 @@ func openPort(name string, baud int, readTimeout time.Duration) (p *Port, err er
 		return
 	}
 
-	return &Port{f: f}, nil
-}
-
-func (p *Port) Close() (err error) {
-	p.logMsg("Close", "")
-	return p.f.Close()
-}
-
-func (p *Port) Read(buf []byte) (n int, err error) {
-	n, err = p.f.Read(buf)
-	if err != nil && err != io.EOF {
-		p.logMsg("Read", "Error %d", err)
-		return n, err
-	} else if n > 0 {
-		p.logData('+', buf)
-		return n, nil
-	}
-	return 0, nil
-}
-
-func (p *Port) Write(buf []byte) (n int, err error) {
-	n, err = p.f.Write(buf)
-	if err != nil {
-		p.logMsg("Write", err.Error())
-	} else if n > 0 {
-		p.logData('-', buf)
-	}
-	return n, err
+	return &Port{BasePort{f: f}}, nil
 }
 
 // Discards data written to the port but not transmitted,
 // or data received but not read
 func (p *Port) Flush() error {
 	const TCFLSH = 0x540B
-	_, _, errno := syscall.Syscall(
+	_, _, err := syscall.Syscall(
 		syscall.SYS_IOCTL,
-		p.f.Fd(),
+		uintptr(p.f.Fd()),
 		uintptr(TCFLSH),
 		uintptr(syscall.TCIOFLUSH),
 	)
-	if errno != 0 {
-		p.logMsg("Flush", "Error %d", errno)
-		return errno
-	} else {
-		p.logMsg("Flush", "")
-	}
-	return nil
-}
-
-func (p *Port) SetDtr(v bool) error {
-	return p.setModemLine("DTR", syscall.TIOCM_DTR, v)
-}
-
-func (p *Port) SetRts(v bool) error {
-	return p.setModemLine("RTS", syscall.TIOCM_RTS, v)
-}
-
-func (p *Port) setModemLine(tag string, line uint, v bool) error {
-	req := syscall.TIOCMBIC
-	if v {
-		req = syscall.TIOCMBIS
-	}
-	_, _, errno := syscall.Syscall(
-		syscall.SYS_IOCTL,
-		p.f.Fd(),
-		uintptr(req),
-		uintptr(unsafe.Pointer(&line)),
-	)
-	if errno != 0 {
-		p.logMsg(tag, "%t -> error %s [%d]", v, errno.Error(), errno)
-		return errno
-	} else {
-		p.logMsg(tag, "%t", v)
-		return nil
-	}
+	return err
 }

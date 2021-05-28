@@ -1,99 +1,39 @@
-/*
-Goserial is a simple go package to allow you to read and write from
-the serial port as a stream of bytes.
-
-It aims to have the same API on all platforms, including windows.  As
-an added bonus, the windows package does not use cgo, so you can cross
-compile for windows from another platform.  Unfortunately goinstall
-does not currently let you cross compile so you will have to do it
-manually:
-
- GOOS=windows make clean install
-
-Currently there is very little in the way of configurability.  You can
-set the baud rate.  Then you can Read(), Write(), or Close() the
-connection.  Read() will block until at least one byte is returned.
-Write is the same.  There is currently no exposed way to set the
-timeouts, though patches are welcome.
-
-Currently all ports are opened with 8 data bits, 1 stop bit, no
-parity, no hardware flow control, and no software flow control.  This
-works fine for many real devices and many faux serial devices
-including usb-to-serial converters and bluetooth serial ports.
-
-You may Read() and Write() simulantiously on the same connection (from
-different goroutines).
-
-Example usage:
-
-  package main
-
-  import (
-        "github.com/tarm/goserial"
-        "log"
-  )
-
-  func main() {
-        c := &serial.Config{Name: "COM5", Baud: 115200}
-        s, err := serial.OpenPort(c)
-        if err != nil {
-                log.Fatal(err)
-        }
-
-        n, err := s.Write([]byte("test"))
-        if err != nil {
-                log.Fatal(err)
-        }
-
-        buf := make([]byte, 128)
-        n, err = s.Read(buf)
-        if err != nil {
-                log.Fatal(err)
-        }
-        log.Print("%q", buf[:n])
-  }
-*/
 package serial
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
+	"unsafe"
 )
 
-// Config contains the information needed to open a serial port.
-//
-// Currently few options are implemented, but more may be added in the
-// future (patches welcome), so it is recommended that you create a
-// new config addressing the fields by name rather than by order.
-//
-// For example:
-//
-//    c0 := &serial.Config{Name: "COM45", Baud: 115200, ReadTimeout: time.Millisecond * 500}
-// or
-//    c1 := new(serial.Config)
-//    c1.Name = "/dev/tty.usbserial"
-//    c1.Baud = 115200
-//    c1.ReadTimeout = time.Millisecond * 500
-//
 type Config struct {
 	Name        string
 	Baud        int
-	ReadTimeout time.Duration // Total timeout
+	ReadTimeout time.Duration
 	LogFile     string
 
-	// Size     int // 0 get translated to 8
+	// Size     int
 	// Parity   SomeNewTypeToGetCorrectDefaultOf_None
 	StopBits int
 
 	// RTSFlowControl bool
 	// DTRFlowControl bool
 	// XONFlowControl bool
-
 	// CRLFTranslate bool
+}
+
+type BasePort struct {
+	f      *os.File
+	logger *log.Logger
+	logTag rune
+	logBuf [64]byte
+	logPtr int
 }
 
 type SerialError struct {
@@ -116,8 +56,9 @@ func (se SerialError) Error() string {
 
 // OpenPort opens a serial port with the specified configuration
 func OpenPort(c *Config) (*Port, error) {
+	//return openPort(c.Name, c.Baud, c.ReadTimeout)
 	// call platform-specific function
-	p, err := openPort(c.Name, c.Baud, c.ReadTimeout)
+	p, err := openPort(c)
 	if p != nil && err == nil && c.LogFile != "" {
 		err = p.openLog(c.LogFile)
 		p.logMsg("Open", c.Name)
@@ -125,7 +66,7 @@ func OpenPort(c *Config) (*Port, error) {
 	return p, err
 }
 
-func (p *Port) openLog(logFile string) error {
+func (p *BasePort) openLog(logFile string) error {
 	f, e := os.OpenFile(logFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0755)
 	if e == nil {
 		p.logger = log.New(f, "", log.LstdFlags)
@@ -133,7 +74,7 @@ func (p *Port) openLog(logFile string) error {
 	return e
 }
 
-func (p *Port) logMsg(tag string, msg string, arg ...interface{}) {
+func (p *BasePort) logMsg(tag string, msg string, arg ...interface{}) {
 	if p.logger == nil {
 		return
 	}
@@ -144,7 +85,7 @@ func (p *Port) logMsg(tag string, msg string, arg ...interface{}) {
 	p.logger.Printf(msg, arg...)
 }
 
-func (p *Port) logData(tag rune, data []byte) {
+func (p *BasePort) logData(tag rune, data []byte) {
 	if p.logger == nil {
 		return
 	}
@@ -161,7 +102,7 @@ func (p *Port) logData(tag rune, data []byte) {
 	}
 }
 
-func (p *Port) logFlush() {
+func (p *BasePort) logFlush() {
 	if p.logger != nil && p.logPtr > 0 {
 		var hex, asc strings.Builder
 		tag := p.logTag
@@ -188,29 +129,81 @@ func (p *Port) logFlush() {
 	p.logPtr = 0
 }
 
-// Converts the timeout values for Linux / POSIX systems
-func posixTimeoutValues(readTimeout time.Duration) (vmin uint8, vtime uint8) {
-	const MAXUINT8 = 1<<8 - 1 // 255
-	// set blocking / non-blocking read
-	var minBytesToRead uint8 = 1
-	var readTimeoutInDeci int64
-	if readTimeout > 0 {
-		// EOF on zero read
-		minBytesToRead = 0
-		// convert timeout to deciseconds as expected by VTIME
-		readTimeoutInDeci = (readTimeout.Nanoseconds() / 1e6 / 100)
-		// capping the timeout
-		if readTimeoutInDeci < 1 {
-			// min possible timeout 1 Deciseconds (0.1s)
-			readTimeoutInDeci = 1
-		} else if readTimeoutInDeci > MAXUINT8 {
-			// max possible timeout is 255 deciseconds (25.5s)
-			readTimeoutInDeci = MAXUINT8
-		}
-	}
-	return minBytesToRead, uint8(readTimeoutInDeci)
+func (p *BasePort) Close() (err error) {
+	p.logMsg("Close", "")
+	return p.f.Close()
 }
 
-// func SendBreak()
+func (p *BasePort) Read(buf []byte) (n int, err error) {
+	n, err = p.f.Read(buf)
+	if err != nil && err != io.EOF {
+		p.logMsg("Read", "Error %d", err)
+		return n, err
+	} else if n > 0 {
+		p.logData('+', buf)
+		return n, nil
+	}
+	return 0, nil
+}
 
-// func RegisterBreakHandler(func())
+func (p *BasePort) Write(buf []byte) (n int, err error) {
+	n, err = p.f.Write(buf)
+	if err != nil {
+		p.logMsg("Write", err.Error())
+	} else if n > 0 {
+		p.logData('-', buf)
+	}
+	return n, err
+}
+
+func (p *BasePort) SetDtr(v bool) error {
+	return p.setModemLine("DTR", syscall.TIOCM_DTR, v)
+}
+
+func (p *BasePort) SetRts(v bool) error {
+	return p.setModemLine("RTS", syscall.TIOCM_RTS, v)
+}
+
+func (p *BasePort) setModemLine(tag string, line uint, v bool) error {
+	req := syscall.TIOCMBIC
+	if v {
+		req = syscall.TIOCMBIS
+	}
+	_, _, errno := syscall.Syscall(
+		syscall.SYS_IOCTL,
+		p.f.Fd(),
+		uintptr(req),
+		uintptr(unsafe.Pointer(&line)),
+	)
+	if errno != 0 {
+		p.logMsg(tag, "%t -> error %s [%d]", v, errno.Error(), errno)
+		return errno
+	} else {
+		p.logMsg(tag, "%t", v)
+		return nil
+	}
+}
+
+// Converts the timeout values for Linux / POSIX systems
+func posixTimeoutValues(readTimeout time.Duration) (vmin uint8, vtime uint8) {
+	// set blocking / non-blocking read
+	vmin = 1
+	vtime = 0
+	if readTimeout > 0 {
+		// EOF on zero read
+		vmin = 0
+		// convert timeout to deciseconds as expected by VTIME
+		vt := (readTimeout.Nanoseconds() / 1e6 / 100)
+		// capping the timeout
+		if vt < 1 {
+			// min possible timeout 1 Deciseconds (0.1s)
+			vtime = 1
+		} else if vt > 255 {
+			// max possible timeout is 255 deciseconds (25.5s)
+			vtime = 255
+		} else {
+			vtime = uint8(vt)
+		}
+	}
+	return
+}
