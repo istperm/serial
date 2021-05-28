@@ -110,9 +110,9 @@ func openPort(c *Config) (p *Port, err error) {
 		return nil, errno
 	}
 
-	if err = syscall.SetNonblock(int(fd), true); err != nil {
-		return
-	}
+	// if err = syscall.SetNonblock(int(fd), true); err != nil {
+	// 	return
+	// }
 
 	return &Port{BasePort{f: f}}, nil
 }
@@ -121,11 +121,17 @@ func openPort(c *Config) (p *Port, err error) {
 // or data received but not read
 func (p *Port) Flush() error {
 	const TCFLSH = 0x540B
-	_, _, err := syscall.Syscall(
+	_, _, errno := syscall.Syscall(
 		syscall.SYS_IOCTL,
 		uintptr(p.f.Fd()),
 		uintptr(TCFLSH),
 		uintptr(syscall.TCIOFLUSH),
 	)
-	return err
+	if errno != 0 {
+		p.logMsg("Flush", "Error %d", errno)
+		return errno
+	} else {
+		p.logMsg("Flush", "")
+		return nil
+	}
 }

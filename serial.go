@@ -130,6 +130,7 @@ func (p *BasePort) logFlush() {
 }
 
 func (p *BasePort) Close() (err error) {
+	p.logFlush()
 	p.logMsg("Close", "")
 	return p.f.Close()
 }
@@ -138,7 +139,7 @@ func (p *BasePort) Read(buf []byte) (n int, err error) {
 	n, err = p.f.Read(buf)
 	if err != nil && err != io.EOF {
 		p.logMsg("Read", "Error %d", err)
-		return n, err
+		return 0, err
 	} else if n > 0 {
 		p.logData('+', buf)
 		return n, nil
@@ -153,7 +154,7 @@ func (p *BasePort) Write(buf []byte) (n int, err error) {
 	} else if n > 0 {
 		p.logData('-', buf)
 	}
-	return n, err
+	return
 }
 
 func (p *BasePort) SetDtr(v bool) error {
