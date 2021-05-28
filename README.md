@@ -1,6 +1,3 @@
-<<<<<<< HEAD
-[![GoDoc](https://godoc.org/github.com/tarm/serial?status.svg)](http://godoc.org/github.com/tarm/serial)
-
 Serial
 ========
 Cloned from:
@@ -177,4 +174,4 @@ timeout between two bytes.
 Possible Future Work
 -------------------- 
 - better tests (loopback etc)
->>>>>>> 1d7f823bfef65b7cc26b5816903f216aec72dbc1
+
