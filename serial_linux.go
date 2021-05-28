@@ -9,10 +9,6 @@ import (
 	"unsafe"
 )
 
-type Port struct {
-	BasePort
-}
-
 func openPort(c *Config) (p *Port, err error) {
 	var bauds = map[int]uint32{
 		50:      syscall.B50,
@@ -110,9 +106,9 @@ func openPort(c *Config) (p *Port, err error) {
 		return nil, errno
 	}
 
-	// if err = syscall.SetNonblock(int(fd), true); err != nil {
-	// 	return
-	// }
+	if err = syscall.SetNonblock(int(fd), true); err != nil {
+		return
+	}
 
 	return &Port{BasePort{f: f}}, nil
 }

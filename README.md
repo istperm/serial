@@ -8,7 +8,8 @@ https://github.com/jaguar/serial
 A Go package to allow you to read and write from the
 serial port as a stream of bytes.
 
-v1.0.1 - DTR control added in linux version.
+v1.0.2 - logging
+v1.0.1 - DTR/RTS control added in linux version.
 
 Details
 -------
