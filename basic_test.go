@@ -5,11 +5,18 @@ import (
 )
 
 func TestConnection(t *testing.T) {
-	// c0 := Config{Name: "/dev/ttyACM0", Baud: 115200}
-	// s1, err := OpenPort(&c0)
-	// if err != nil {
-	// 	t.Fatal(err)
+	// cfg := Config{Name: "/dev/ttyACM0", Baud: 115200}
+	// ser, err := OpenPort(&cfg)
+	//  if err != nil {
+	//  	t.Fatal(err)
 	// }
+	// ser.SetDtr(false)
+	// ser.Flush()
+	// time.Sleep(100*time.Millisecond)
+	// ser.SetDtr(true)
+
+	// buf := make([]byte, 64)
+	// n, err := ser.Read(buf)
 
 	// c1 := Config{Name: "/dev/ttyUSB1", Baud: 115200}
 	// s2, err := OpenPort(&c1)

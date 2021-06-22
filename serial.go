@@ -112,10 +112,11 @@ func (p *BasePort) logFlush() {
 				hex.Reset()
 				asc.Reset()
 			}
-			hex.WriteString(fmt.Sprintf("%02X ", p.logBuf[i]))
-			c := rune(p.logBuf[i])
-			if c < 0x20 {
-				c = '.'
+			b := p.logBuf[i]
+			hex.WriteString(fmt.Sprintf("%02X ", b))
+			c := '.'
+			if b >= 0x20 {
+				c = AsciiToUnicode(b)
 			}
 			asc.WriteRune(c)
 		}
@@ -130,4 +131,77 @@ func (p *BasePort) Close() (err error) {
 	p.logFlush()
 	p.logMsg("Close", "")
 	return p.f.Close()
+}
+
+func AsciiToUnicode(b byte) rune {
+	switch b {
+	case 0xC0, 0xE0:
+		return 'А'
+	case 0xC1, 0xE1:
+		return 'Б'
+	case 0xC2, 0xE2:
+		return 'В'
+	case 0xC3, 0xE3:
+		return 'Г'
+	case 0xC4, 0xE4:
+		return 'Д'
+	case 0xC5, 0xE5:
+		return 'Е'
+	case 0xC6, 0xE6:
+		return 'Ж'
+	case 0xC7, 0xE7:
+		return 'З'
+	case 0xC8, 0xE8:
+		return 'И'
+	case 0xC9, 0xE9:
+		return 'Й'
+	case 0xCA, 0xEA:
+		return 'К'
+	case 0xCB, 0xEB:
+		return 'Л'
+	case 0xCC, 0xEC:
+		return 'М'
+	case 0xCD, 0xED:
+		return 'Н'
+	case 0xCE, 0xEE:
+		return 'О'
+	case 0xCF, 0xEF:
+		return 'П'
+
+	case 0xD0, 0xF0:
+		return 'Р'
+	case 0xD1, 0xF1:
+		return 'С'
+	case 0xD2, 0xF2:
+		return 'Т'
+	case 0xD3, 0xF3:
+		return 'У'
+	case 0xD4, 0xF4:
+		return 'Ф'
+	case 0xD5, 0xF5:
+		return 'Х'
+	case 0xD6, 0xF6:
+		return 'Ц'
+	case 0xD7, 0xF7:
+		return 'Ч'
+	case 0xD8, 0xF8:
+		return 'Ш'
+	case 0xD9, 0xF9:
+		return 'Щ'
+	case 0xDA, 0xFA:
+		return 'Ъ'
+	case 0xDB, 0xFB:
+		return 'Ы'
+	case 0xDC, 0xFC:
+		return 'Ь'
+	case 0xDD, 0xFD:
+		return 'Э'
+	case 0xDE, 0xFE:
+		return 'Ю'
+	case 0xDF, 0xFF:
+		return 'Я'
+
+	default:
+		return rune(b)
+	}
 }
