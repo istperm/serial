@@ -32,7 +32,7 @@ type BasePort struct {
 	f      *os.File
 	logger *log.Logger
 	logTag rune
-	logBuf [64]byte
+	logBuf [128]byte
 	logPtr int
 }
 
